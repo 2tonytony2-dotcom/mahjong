@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>麻雀計數器 (離線版)</title>
+    <title>麻雀計數器 (離線自動儲存版)</title>
     <style>
         :root {
             --primary-color: #2e7d32;
@@ -27,6 +27,21 @@
             padding: 16px;
             border-radius: 12px;
             box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+            position: relative;
+        }
+
+        /* 右上角局數顯示器 */
+        .hand-counter-badge {
+            position: absolute;
+            top: 12px;
+            right: 16px;
+            background-color: var(--primary-color);
+            color: white;
+            padding: 4px 10px;
+            border-radius: 20px;
+            font-size: 13px;
+            font-weight: bold;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.15);
         }
 
         h1, h2, h3, h4 {
@@ -219,6 +234,9 @@
 <body>
 
 <div class="container">
+    <!-- 右上角已打鋪數標籤 -->
+    <div id="hand-badge" class="hand-counter-badge" style="display:none;">已打 0 鋪</div>
+
     <!-- 步驟 1: 基本設定 -->
     <div id="step-setup" class="section active">
         <h1>麻雀計數器</h1>
@@ -321,6 +339,10 @@
             <button class="success" onclick="openSettlementModal()">💰 遊戲結算</button>
         </div>
 
+        <div style="margin-bottom: 15px;">
+            <button class="danger" style="width:100%;" onclick="resetNewGame()">新戰局 / 清空紀錄</button>
+        </div>
+
         <h4>對局紀錄</h4>
         <div class="log-list" id="game-log"></div>
     </div>
@@ -332,25 +354,86 @@
 </div>
 
 <script>
+    const STORAGE_KEY_STATE = 'mahjong_counter_state_v2';
+    const STORAGE_KEY_HISTORY = 'mahjong_counter_history_v2';
+    const STORAGE_KEY_STEP = 'mahjong_counter_step_v2';
+
     let state = {
-        players: [], // { id, name, score }
+        players: [], 
         seats: { East: null, South: null, West: null, North: null },
         gameType: 'pmj',
         pmj: { x: 10, y: 20, maxHorses: 2 },
         rake: { type: 'none', percent: 0, targetCost: 0, totalRakeCollected: 0 },
-        logs: []
+        logs: [],
+        handCount: 0 // 已打鋪數 (僅食糊/自摸時+1)
     };
 
     let historyStack = [];
     let swapTempSeat = null;
+    let currentStep = 'step-setup';
 
     window.onload = function() {
         generatePlayerInputs();
+        loadSavedData();
     };
 
+    function saveToLocalStorage() {
+        localStorage.setItem(STORAGE_KEY_STATE, JSON.stringify(state));
+        localStorage.setItem(STORAGE_KEY_HISTORY, JSON.stringify(historyStack));
+        localStorage.setItem(STORAGE_KEY_STEP, currentStep);
+    }
+
+    function loadSavedData() {
+        const savedState = localStorage.getItem(STORAGE_KEY_STATE);
+        const savedHistory = localStorage.getItem(STORAGE_KEY_HISTORY);
+        const savedStep = localStorage.getItem(STORAGE_KEY_STEP);
+
+        if (savedState) {
+            try {
+                state = JSON.parse(savedState);
+                if (state.handCount === undefined) state.handCount = 0;
+                
+                if (savedHistory) historyStack = JSON.parse(savedHistory);
+                
+                if (savedStep && document.getElementById(savedStep)) {
+                    showStep(savedStep);
+                } else {
+                    showStep('step-game');
+                }
+
+                renderGameBoard();
+                updateLogDisplay();
+            } catch (e) {
+                console.error("載入舊資料失敗:", e);
+            }
+        }
+    }
+
+    function resetNewGame() {
+        if (confirm("確定要清空所有數據並開始新局嗎？現有分數與對局紀錄將被清除。")) {
+            localStorage.removeItem(STORAGE_KEY_STATE);
+            localStorage.removeItem(STORAGE_KEY_HISTORY);
+            localStorage.removeItem(STORAGE_KEY_STEP);
+            location.reload();
+        }
+    }
+
+    function updateBadge() {
+        const badge = document.getElementById('hand-badge');
+        if (currentStep === 'step-game') {
+            badge.style.display = 'block';
+            badge.innerText = `已打 ${state.handCount} 鋪`;
+        } else {
+            badge.style.display = 'none';
+        }
+    }
+
     function showStep(stepId) {
+        currentStep = stepId;
         document.querySelectorAll('.section').forEach(s => s.classList.remove('active'));
         document.getElementById(stepId).classList.add('active');
+        updateBadge();
+        saveToLocalStorage();
     }
 
     function generatePlayerInputs() {
@@ -429,6 +512,7 @@
         state.rake.type = document.getElementById('rake-type').value;
         state.rake.percent = parseFloat(document.getElementById('rake-percent').value) || 0;
         state.rake.targetCost = parseFloat(document.getElementById('total-cost').value) || 0;
+        state.handCount = 0;
 
         historyStack = [];
         renderGameBoard();
@@ -445,9 +529,9 @@
         state = historyStack.pop();
         updateUndoButtonState();
         renderGameBoard();
-        
-        const logContainer = document.getElementById('game-log');
-        logContainer.innerHTML = state.logs.map(l => `<div>• ${l}</div>`).join('');
+        updateLogDisplay();
+        updateBadge();
+        saveToLocalStorage();
     }
 
     function updateUndoButtonState() {
@@ -459,6 +543,7 @@
 
     function renderGameBoard() {
         const container = document.getElementById('game-seats');
+        if (!container) return;
         container.innerHTML = '';
 
         const winds = { East: '東', South: '南', West: '西', North: '北' };
@@ -482,17 +567,17 @@
         if (state.rake.type === 'percent') {
             poolText = `已抽水: $${state.rake.totalRakeCollected.toFixed(1)}`;
         } else if (state.rake.type === 'cost') {
-            poolText = `待結算扣除成本: $${state.rake.targetCost}`;
+            poolText = `待扣總成本: $${state.rake.targetCost}`;
         }
         document.getElementById('pool-info').innerText = poolText;
         updateUndoButtonState();
+        updateBadge();
     }
 
     function getActivePlayers() {
         return Object.values(state.seats).map(id => state.players.find(p => p.id === id)).filter(Boolean);
     }
 
-    // 遊戲進行期間的派彩處理 (若選擇成本模式，平時不扣除，留待結算時一次過扣)
     function processWinnings(winnerId, grossAmount) {
         let actualGain = grossAmount;
         let deducted = 0;
@@ -511,8 +596,14 @@
 
     function addLog(text) {
         state.logs.unshift(text);
+        updateLogDisplay();
+    }
+
+    function updateLogDisplay() {
         const logContainer = document.getElementById('game-log');
-        logContainer.innerHTML = state.logs.map(l => `<div>• ${l}</div>`).join('');
+        if (logContainer) {
+            logContainer.innerHTML = state.logs.map(l => `<div>• ${l}</div>`).join('');
+        }
     }
 
     function closeModal() {
@@ -607,6 +698,7 @@
 
         closeModal();
         renderGameBoard();
+        saveToLocalStorage();
     }
 
     function openWinModal() {
@@ -667,6 +759,9 @@
 
         saveSnapshot();
 
+        // 成功食糊/自摸，局數 +1
+        state.handCount += 1;
+
         let grossAmount = 0;
         let logDetail = '';
 
@@ -677,7 +772,7 @@
             
             target.score -= payAmount;
             grossAmount = payAmount;
-            logDetail = `${winner.name} 食糊 (${target.name} 打出付 $${payAmount})`;
+            logDetail = `[第 ${state.handCount} 鋪] ${winner.name} 食糊 (${target.name} 打出付 $${payAmount})`;
         } else if (type === 'self') {
             const payAmountPerPerson = (1 + horses) * state.pmj.y;
             activePlayers.forEach(p => {
@@ -686,7 +781,7 @@
                     grossAmount += payAmountPerPerson;
                 }
             });
-            logDetail = `${winner.name} 自摸 (中 ${horses} 隻馬，每人付 $${payAmountPerPerson})`;
+            logDetail = `[第 ${state.handCount} 鋪] ${winner.name} 自摸 (中 ${horses} 隻馬，每人付 $${payAmountPerPerson})`;
         } else if (type === 'rob') {
             const targetId = document.getElementById('win-target').value;
             const target = state.players.find(p => p.id === targetId);
@@ -694,7 +789,7 @@
 
             target.score -= payAmount;
             grossAmount = payAmount;
-            logDetail = `${winner.name} 搶槓 ${target.name} (中 ${horses} 隻馬，包付 $${payAmount})`;
+            logDetail = `[第 ${state.handCount} 鋪] ${winner.name} 搶槓 ${target.name} (中 ${horses} 隻馬，包付 $${payAmount})`;
         }
 
         const { actualGain, deducted } = processWinnings(winnerId, grossAmount);
@@ -703,6 +798,7 @@
 
         closeModal();
         renderGameBoard();
+        saveToLocalStorage();
     }
 
     function openSwapModal() {
@@ -729,6 +825,7 @@
 
             swapTempSeat = null;
             renderGameBoard();
+            saveToLocalStorage();
         }
     }
 
@@ -808,31 +905,26 @@
 
         closeModal();
         renderGameBoard();
+        saveToLocalStorage();
     }
 
-    // ---------------- 遊戲結算 (最終扣除成本與轉帳計算) ----------------
     function openSettlementModal() {
-        let html = `<h3>💰 遊戲總結算</h3>`;
+        let html = `<h3>💰 遊戲總結算 (共打了 ${state.handCount} 鋪)</h3>`;
 
-        // 深拷貝玩家數據以計算結算扣除成本後的金額
         let settlementPlayers = JSON.parse(JSON.stringify(state.players));
         let totalCostDeducted = 0;
 
         if (state.rake.type === 'cost' && state.rake.targetCost > 0) {
             totalCostDeducted = state.rake.targetCost;
-            
-            // 找出所有正數贏家
             let winners = settlementPlayers.filter(p => p.score > 0);
             let totalProfit = winners.reduce((sum, p) => sum + p.score, 0);
 
             if (totalProfit > 0) {
-                // 按贏錢比例扣除成本
                 winners.forEach(p => {
                     let costShare = (p.score / totalProfit) * totalCostDeducted;
                     p.score -= costShare;
                 });
             } else {
-                // 若全場無贏家（或平手），則平分成本
                 let sharePerPerson = totalCostDeducted / settlementPlayers.length;
                 settlementPlayers.forEach(p => p.score -= sharePerPerson);
             }
@@ -844,7 +936,6 @@
             `;
         }
 
-        // 1. 各玩家總盈虧列表
         html += `<div class="settlement-card"><h4>玩家最終盈虧 (已含結算扣費)</h4>`;
         settlementPlayers.forEach(p => {
             const color = p.score >= 0 ? '#2e7d32' : '#d32f2f';
@@ -869,7 +960,6 @@
             `;
         }
 
-        // 2. 最簡轉帳指南
         const transactions = calculateTransfers(settlementPlayers);
 
         html += `<div class="settlement-card"><h4>建議付款指南 (最簡化轉帳)</h4>`;
@@ -897,8 +987,8 @@
     }
 
     function calculateTransfers(players) {
-        let debtors = [];   // 負數 (需給錢)
-        let creditors = []; // 正數 (需收錢)
+        let debtors = [];
+        let creditors = [];
 
         players.forEach(p => {
             const amount = Math.round(p.score * 10) / 10;
